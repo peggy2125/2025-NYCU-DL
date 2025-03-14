@@ -1,0 +1,5 @@
+
+
+
+
+運行train: python -m src.train --data_path "D:/PUPU/2025 NYCU DL/Lab2_Binary_Semantic_Segmentation_2025/Lab2_Binary_Semantic_Segmentation_2025/dataset" --epochs 5 --batch_size 1 --learning-rate 1e-5
