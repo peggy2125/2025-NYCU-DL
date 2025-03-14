@@ -62,7 +62,12 @@ class OxfordPetDataset(torch.utils.data.Dataset):
 
     @staticmethod
     def download(root):
+        # 檢查 images/ 和 annotations/ 是否已經存在
+        if os.path.exists(os.path.join(root, "images")) and os.path.exists(os.path.join(root, "annotations")):
+            print("Dataset already exists. Skipping download.")
+            return  # 如果數據已經存在，直接返回
 
+        print("Downloading dataset...")
         # load images
         filepath = os.path.join(root, "images.tar.gz")
         download_url(
@@ -128,7 +133,46 @@ def extract_archive(filepath):
     if not os.path.exists(dst_dir):
         shutil.unpack_archive(filepath, extract_dir)
 
-def load_dataset(data_path, mode):
+
+'''def load_dataset(data_path, mode):
     # implement the load dataset function here
 
-    assert False, "Not implemented yet!"
+    # 检查 mode 是否有效
+    assert mode in {"train", "valid", "test"}, "Mode must be one of 'train', 'valid', 'test'"
+
+    # 使用 SimpleOxfordPetDataset 创建数据集对象
+    dataset = SimpleOxfordPetDataset(root=data_path, mode=mode)
+
+    # 创建 DataLoader 对象
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=16, shuffle=(mode == "train"), num_workers=4)
+
+    
+    return dataloader'''
+    
+def load_dataset(data_path, mode):
+    # 檢查 mode 是否有效
+    assert mode in {"train", "valid", "test"}, "Mode must be one of 'train', 'valid', 'test'"
+    
+    class FloatTransformedDataset(torch.utils.data.Dataset):
+        def __init__(self, dataset):
+            self.dataset = dataset
+            
+        def __len__(self):
+            return len(self.dataset)
+            
+        def __getitem__(self, idx):
+            sample = self.dataset[idx]
+            # 將圖像數據轉換為 float 類型並歸一化到 [0, 1]
+            sample['image'] = sample['image'].astype(np.float32) / 255.0
+            sample['mask'] = sample['mask'].astype(np.float32)
+            sample['trimap'] = sample['trimap'].astype(np.float32)
+            return sample
+    
+    # 使用 SimpleOxfordPetDataset 創建數據集對象
+    dataset = SimpleOxfordPetDataset(root=data_path, mode=mode)
+    
+    # 應用數據類型轉換
+    transformed_dataset = FloatTransformedDataset(dataset)
+    
+    return transformed_dataset
+    # assert False, "Not implemented yet!"
