@@ -449,9 +449,9 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
         # 讀取對應模式的檔案列表 (train.txt, valid.txt, test.txt)
         self.filenames = self._load_filenames()
         
-        # 如果是訓練模式，應用增強
-        if self.mode == "train":
-            self.apply_augmentations()
+        # # 如果是訓練模式，應用增強
+        # if self.mode == "train":
+        #      self.apply_augmentations()
             
     def _load_filenames(self):
         """根據模式讀取相應的檔案名列表"""
@@ -460,6 +460,8 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
         
         with open(split_file, 'r') as f:
             filenames = [line.strip() for line in f.readlines()]
+        # 确保文件名唯一
+        filenames = list(set(filenames))  # 去重操作
         
         return filenames
         
@@ -470,98 +472,101 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
         mask[(mask == 1.0) | (mask == 3.0)] = 1.0  # Class 1 和 3 為前景
         return mask
     
-    # 修改後的增強函數 - 只增強訓練資料
-    def apply_augmentations(self):
-        """對過濾後的訓練資料應用數據增強，保留過濾後的驗證和測試資料"""
+    # # 修改後的增強函數 - 只增強訓練資料
+    # def apply_augmentations(self):
+    #     """對過濾後的訓練資料應用數據增強，保留過濾後的驗證和測試資料"""
 
-        # 讀取過濾資料集的訓練檔案名
-        with open(os.path.join(self.data_path, "train.txt"), "r") as f:
-            train_filenames = [line.strip().replace('.jpg', '') for line in f.readlines()]
+    #     # 讀取過濾資料集的訓練檔案名
+    #     with open(os.path.join(self.data_path, "train.txt"), "r") as f:
+    #         train_filenames = [line.strip().replace('.jpg', '') for line in f.readlines()]
 
-        # 創建增強管線
+    #     # 創建增強管線
     
-        # 增強的圖片和遮罩目錄
-        aug_images_dir = os.path.join(self.data_path, "images")
-        aug_masks_dir = os.path.join(self.data_path, "annotations", "trimaps")
-        os.makedirs(aug_images_dir, exist_ok=True)
-        os.makedirs(aug_masks_dir, exist_ok=True)
+    #     # 增強的圖片和遮罩目錄
+    #     aug_images_dir = os.path.join(self.data_path, "images")
+    #     aug_masks_dir = os.path.join(self.data_path, "annotations", "trimaps")
+    #     os.makedirs(aug_images_dir, exist_ok=True)
+    #     os.makedirs(aug_masks_dir, exist_ok=True)
     
-        augmented_filenames = []
-        # 只對訓練資料生成增強版本
-        print("Applying augmentations to training data...")
-        aug_count = 0
-        for filename in tqdm(train_filenames):
-            image_path = os.path.join(self.data_path, "images", filename + ".jpg")
-            trimap_path = os.path.join(self.data_path, "annotations", "trimaps", filename + ".png")
+    #     augmented_filenames = []
+    #     # 只對訓練資料生成增強版本
+    #     print("Applying augmentations to training data...")
+    #     aug_count = 0
+    #     for filename in tqdm(train_filenames):
+    #         image_path = os.path.join(self.data_path, "images", filename + ".jpg")
+    #         trimap_path = os.path.join(self.data_path, "annotations", "trimaps", filename + ".png")
             
-            transform = create_augmentation_pipeline(self.data_path, os.path.join(filename + ".png"))
+    #         transform = create_augmentation_pipeline(self.data_path, os.path.join(filename + ".png"))
             
-            # 檢查檔案是否存在
-            if not os.path.exists(image_path) or not os.path.exists(trimap_path):
-                continue
+    #         # 檢查檔案是否存在
+    #         if not os.path.exists(image_path) or not os.path.exists(trimap_path):
+    #             continue
             
-            # 讀取圖像和對應遮罩
-            image = cv2.imread(image_path)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            trimap = np.array(Image.open(trimap_path))
+    #         # 讀取圖像和對應遮罩
+    #         image = cv2.imread(image_path)
+    #         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    #         trimap = np.array(Image.open(trimap_path))
             
-            # 生成多個增強版本
-            for i in range(self.num_augmentations):
-                try:
+    #         # 生成多個增強版本
+    #         for i in range(self.num_augmentations):
+    #             try:
 
-                    augmented = transform(image=image, mask=trimap)
-                    aug_image = augmented['image']
-                    aug_mask = augmented['mask']
+    #                 augmented = transform(image=image, mask=trimap)
+    #                 aug_image = augmented['image']
+    #                 aug_mask = augmented['mask']
                     
-                    # 確保增強後的遮罩保留原始的值
-                    aug_mask = np.where(
-                        (aug_mask > 0) & (aug_mask <= 3),
-                        aug_mask,
-                        trimap.flatten()[0]  # 使用原始遮罩中的默認值
-                    )
+    #                 # 確保增強後的遮罩保留原始的值
+    #                 aug_mask = np.where(
+    #                     (aug_mask > 0) & (aug_mask <= 3),
+    #                     aug_mask,
+    #                     trimap.flatten()[0]  # 使用原始遮罩中的默認值
+    #                 )
                     
-                    # 檢查前景占比
-                    foreground_ratio = np.sum((aug_mask == 1) | (aug_mask == 3)) / aug_mask.size
-                    if foreground_ratio < 0.05:  # 如果前景占比太小，則跳過
-                        continue
+    #                 # 檢查前景占比
+    #                 foreground_ratio = np.sum((aug_mask == 1) | (aug_mask == 3)) / aug_mask.size
+    #                 if foreground_ratio < 0.05:  # 如果前景占比太小，則跳過
+    #                     continue
                     
-                    # 保存增強後的圖像和遮罩
-                    aug_image_filename = f"{filename}_aug{i:02d}.jpg"
-                    aug_mask_filename = f"{filename}_aug{i:02d}.png"
+    #                 # 保存增強後的圖像和遮罩
+    #                 aug_image_filename = f"{filename}_aug{i:02d}.jpg"
+    #                 aug_mask_filename = f"{filename}_aug{i:02d}.png"
                     
-                    # 將RGB圖像轉換回BGR後保存
-                    cv2.imwrite(
-                        os.path.join(aug_images_dir, aug_image_filename),
-                        cv2.cvtColor(aug_image, cv2.COLOR_RGB2BGR)
-                    )
-                    Image.fromarray(aug_mask.astype(np.uint8)).save(
-                        os.path.join(aug_masks_dir, aug_mask_filename)
-                    )
+    #                 # 將RGB圖像轉換回BGR後保存
+    #                 cv2.imwrite(
+    #                     os.path.join(aug_images_dir, aug_image_filename),
+    #                     cv2.cvtColor(aug_image, cv2.COLOR_RGB2BGR)
+    #                 )
+    #                 Image.fromarray(aug_mask.astype(np.uint8)).save(
+    #                     os.path.join(aug_masks_dir, aug_mask_filename)
+    #                 )
                     
-                    # 將增強後的檔案名稱添加到列表中
-                    augmented_filenames.append(f"{filename}_aug{i:02d}")
-                    aug_count += 1
-                except Exception as e:
-                    print(f"Error augmenting {filename}: {e}")
-                    continue
+    #                 # 將增強後的檔案名稱添加到列表中
+    #                 augmented_filenames.append(f"{filename}_aug{i:02d}")
+    #                 aug_count += 1
+    #             except Exception as e:
+    #                 print(f"Error augmenting {filename}: {e}")
+    #                 continue
         
-        # 更新訓練集的 `train_filenames.txt`
-        with open(os.path.join(self.data_path, "train_filenames.txt"), 'a') as f:
-            for aug_filename in augmented_filenames:
-                f.write(f"{aug_filename}\n")
+    #     # 更新訓練集的 `train_filenames.txt`
+    #     with open(os.path.join(self.data_path, "train_filenames.txt"), 'a') as f:
+    #         for aug_filename in augmented_filenames:
+    #             f.write(f"{aug_filename}\n")
 
-        # 計算增強後的資料集大小
-        final_train_count = len([f for f in os.listdir(aug_images_dir) if any(f.startswith(fn) for fn in train_filenames)])
-        final_valid_count = len([f for f in os.listdir(os.path.join(self.data_path, "valid_filenames.txt"))])
-        final_test_count = len([f for f in os.listdir(os.path.join(self.data_path, "test_filenames.txt"))])
+    #     # 計算增強後的資料集大小
+    #     final_train_count = len([f for f in os.listdir(aug_images_dir) if any(f.startswith(fn) for fn in train_filenames)])
+    #     final_valid_count = len([f for f in os.listdir(os.path.join(self.data_path, "valid_filenames.txt"))])
+    #     final_test_count = len([f for f in os.listdir(os.path.join(self.data_path, "test_filenames.txt"))])
         
-        print(f"增強後的訓練資料：{final_train_count}張 (原始: {len(train_filenames)}張 + 增強: {aug_count}張)")
-        print(f"驗證資料：{final_valid_count}張 (未增強)")
-        print(f"測試資料：{final_test_count}張 (未增強)")
+    #     print(f"增強後的訓練資料：{final_train_count}張 (原始: {len(train_filenames)}張 + 增強: {aug_count}張)")
+    #     print(f"驗證資料：{final_valid_count}張 (未增強)")
+    #     print(f"測試資料：{final_test_count}張 (未增強)")
     
     def __getitem__(self, idx):
         """獲取處理過的樣本"""
         filename = self.filenames[idx]
+        # 确保不加载重复文件
+        if self.filenames.count(filename) > 1:
+            print(f"Warning: duplicate filename found: {filename}")
         
         # 圖像和遮罩的路徑
         image_path = os.path.join(self.data_path, "images", f"{filename}.jpg")
@@ -575,32 +580,42 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
         # 轉換 trimap -> mask
         mask = self._preprocess_mask(trimap)        
         
-        # 清理與處理
-        image = np.array(Image.fromarray(image).resize((256, 256), Image.BILINEAR))
-        mask = np.array(Image.fromarray(mask).resize((256, 256), Image.NEAREST))
-        trimap = np.array(Image.fromarray(trimap).resize((256, 256), Image.NEAREST))
+        # 處理長方形圖片，填充成正方形
+        h, w = image.shape[:2]
+        max_dim = max(h, w)
+        
+        # 創建正方形畫布
+        padded_image = np.zeros((max_dim, max_dim, 3), dtype=np.uint8)
+        padded_mask = np.zeros((max_dim, max_dim), dtype=np.uint8)
+        padded_trimap = np.zeros((max_dim, max_dim), dtype=np.uint8)
+        
+        # 計算填充位置（居中）
+        h_offset = (max_dim - h) // 2
+        w_offset = (max_dim - w) // 2
+        
+        # 填充圖片和遮罩
+        padded_image[h_offset:h_offset+h, w_offset:w_offset+w] = image
+        padded_mask[h_offset:h_offset+h, w_offset:w_offset+w] = mask
+        padded_trimap[h_offset:h_offset+h, w_offset:w_offset+w] = trimap
+        
+        # 調整大小為模型所需的輸入大小（例如 256x256）
+        padded_image = np.array(Image.fromarray(padded_image).resize((256, 256), Image.BILINEAR))
+        padded_mask = np.array(Image.fromarray(padded_mask).resize((256, 256), Image.NEAREST))
+        padded_trimap = np.array(Image.fromarray(padded_trimap).resize((256, 256), Image.NEAREST))
         
         # 轉換到 CHW 格式
-        image = np.moveaxis(image, -1, 0)
-        mask = np.expand_dims(mask, 0)
-        trimap = np.expand_dims(trimap, 0)
+        padded_image = np.moveaxis(padded_image, -1, 0)
+        padded_mask = np.expand_dims(padded_mask, 0)
+        padded_trimap = np.expand_dims(padded_trimap, 0)
         
-        sample = {"image": image, "mask": mask, "trimap": trimap}
-        
-        # 如果有增強操作，應用增強
-        '''if self.augmentations is not None and self.mode == "train":
-            augmented = self.augmentations(image=image, mask=mask, trimap=trimap)
-            sample["image"] = augmented["image"]
-            sample["mask"] = augmented["mask"]
-            sample["trimap"] = augmented["trimap"]
-        
-        return sample'''
+        sample = {"image": padded_image, "mask": padded_mask, "trimap": padded_trimap}
+        return sample
     
     def __len__(self):
         """返回資料集大小"""
         return len(self.filenames)
 
-def load_dataset(data_path, mode):
+'''def load_dataset(data_path, mode):
     # 檢查 mode 是否有效
     assert mode in {"train", "valid", "test"}, "Mode must be one of 'train', 'valid', 'test'"
     
@@ -627,30 +642,36 @@ def load_dataset(data_path, mode):
     
     # 應用數據類型轉換
     transformed_dataset = FloatTransformedDataset(dataset)
+    return transformed_dataset'''
+# model用
+def load_dataset(data_path, mode):
+    # 檢查 mode 是否有效
+    assert mode in {"train", "valid", "test"}, "Mode must be one of 'train', 'valid', 'test'"
+    
+    # 資料清理
+    filtered_dir, filtered_train_filenames, filtered_valid_filenames, filtered_test_filenames = create_filtered_dataset(data_path)
+    
+    class TensorTransformedDataset(torch.utils.data.Dataset):
+        def __init__(self, dataset):
+            self.dataset = dataset
+            
+        def __len__(self):
+            return len(self.dataset)
+            
+        def __getitem__(self, idx):
+            sample = self.dataset[idx]
+            # 將圖像數據轉換為 float 類型並歸一化到 [0, 1]
+            sample['image'] = torch.from_numpy(sample['image'].astype(np.float32) / 255.0)
+            sample['mask'] = torch.from_numpy(sample['mask'].astype(np.float32))
+            sample['trimap'] = torch.from_numpy(sample['trimap'].astype(np.float32))
+            return sample
+    
+    # 使用 PreprocessOxfordPetDataset 創建數據集對象
+    dataset = PreprocessOxfordPetDataset(argdata_path=filtered_dir, mode=mode)
+    
+    # 應用數據類型轉換
+    transformed_dataset = TensorTransformedDataset(dataset)
     return transformed_dataset
-
-'''def process_oxford_pet_dataset(dataset_root):
-    """完整的資料處理流程，只對訓練資料進行清理和增強"""
-    
-    # 確保資料集根目錄存在
-    if not os.path.exists(dataset_root):
-        raise FileNotFoundError(f"資料集路徑不存在: {dataset_root}")
-
-    # 2. 創建過濾後的資料集（只過濾訓練資料）
-    filtered_dir, filtered_train_filenames, filtered_valid_filenames, filtered_test_filenames = create_filtered_dataset(dataset_root, no_foreground, large_unclassified, small_foreground)
-    
-    # 3. 增強訓練資料
-    augmented_dir = apply_augmentations(filtered_dir, num_augmentations=3)
-    
-    # 4. 可視化樣本
-    visualize_samples(augmented_dir)
-    
-    # 5. 載入處理後的資料集
-    train_dataset = load_dataset(augmented_dir, mode="train")
-    valid_dataset = load_dataset(augmented_dir, mode="valid")
-    test_dataset = load_dataset(augmented_dir, mode="test")
-    
-    return train_dataset, valid_dataset, test_dataset'''
 
 # 使用示例
 if __name__ == "__main__":

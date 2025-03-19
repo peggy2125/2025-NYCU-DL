@@ -25,8 +25,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from src.oxford_pet import load_dataset # 导入加载数据集的函数
+from src.oxford_pet_test import load_dataset # 导入加载数据集的函数
 import torch.nn.functional as F
+import os
 
 ''' model structure '''
 class DoubleConv(nn.Module):
@@ -118,70 +119,52 @@ def dice_score(pred, target, threshold=0.5):
     union = torch.sum(pred) + torch.sum(target)
     return 2.0 * intersection / (union + intersection + 1e-6)
 
-######用於測試而已]
-from torch.utils.data import random_split
 
-def load_and_split_data(data_path, batch_size):
-    """ 加载数据集并随机拆分 """
-    full_train_dataset = load_dataset(data_path, mode="train")
-    full_valid_dataset = load_dataset(data_path, mode="valid")
-
-    train_size = int(0.2 * len(full_train_dataset))
-    valid_size = int(0.2 * len(full_valid_dataset))
-
-    train_subset, _ = random_split(full_train_dataset, [train_size, len(full_train_dataset) - train_size])
-    valid_subset, _ = random_split(full_valid_dataset, [valid_size, len(full_valid_dataset) - valid_size])
-
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-    valid_loader = DataLoader(valid_subset, batch_size=batch_size, shuffle=False)
-
-    # **打印调试信息**
-    print(f"Train Loader Type: {type(train_loader)}")
-    print(f"Valid Loader Type: {type(valid_loader)}")
-    print(f"Train Subset Length: {len(train_subset)}")
-    print(f"Valid Subset Length: {len(valid_subset)}")
-
-    return train_loader, valid_loader
-
-
-###到這裡
+###到這裡為止
+import os  # 添加此import以使用路徑功能
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. 加载数据
-    #train_loader = load_dataset(args.data_path, mode="train")
-    #valid_loader = load_dataset(args.data_path, mode="valid")
-    train_loader, valid_loader = load_and_split_data(args.data_path, args.batch_size)
+    # 1. 加载数据 - 直接使用load_dataset而不是random split
+    train_dataset = load_dataset(args.data_path, mode="train")
+    valid_dataset = load_dataset(args.data_path, mode="valid")
+    
+    # 创建DataLoader
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False)
     
     # 2. 创建模型
-    # 在模型初始化時設置 in_channels=3
-    model = UNet(in_channels=3, out_channels=1)# 替换为你自己的模型结构
-    model = model.to(device)   # 如果使用GPU, 否则删除此行
+    model = UNet(in_channels=3, out_channels=1)
+    model = model.to(device)
 
     # 3. 设置损失函数和优化器
-    criterion = nn.BCEWithLogitsLoss()  # 适用于二分类问题
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)  # 优化器
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+
+    # 创建保存模型的目录
+    os.makedirs(args.save_path, exist_ok=True)
+    
+    # 跟踪最佳验证指标
+    best_dice = 0.0
 
     # 4. 训练过程
     for epoch in range(args.epochs):
-        model.train()  # 设为训练模式
+        model.train()
         running_loss = 0.0
         epoch_dice_score = 0.0
 
-        # 使用 tqdm 进度条显示训练进度
-        for batch in train_loader:
+        for batch in tqdm(train_loader):
             images, masks = batch['image'], batch['mask']
+            
+            images, masks = images.to(device), masks.to(device)
 
-            # 在train函數中修改
-            images, masks = images.to(device), masks.to(device) # 如果使用GPU, 否则删除此行
+            optimizer.zero_grad()
+            outputs = model(images)
 
-            optimizer.zero_grad()  # 清空梯度
-            outputs = model(images)  # 模型前向传播
-
-            loss = criterion(outputs, masks)  # 计算损失
-            loss.backward()  # 反向传播
-            optimizer.step()  # 更新权重
+            loss = criterion(outputs, masks)
+            loss.backward()
+            optimizer.step()
 
             running_loss += loss.item()
 
@@ -190,28 +173,54 @@ def train(args):
             epoch_dice_score += dice.item()
 
         # 每个 epoch 结束后打印训练损失
-        print(f"Epoch [{epoch+1}/{args.epochs}], Loss: {running_loss / len(train_loader):.4f}, Dice Score: {epoch_dice_score / len(train_loader):.4f}")
+        train_loss = running_loss / len(train_loader)
+        train_dice = epoch_dice_score / len(train_loader)
+        print(f"Epoch [{epoch+1}/{args.epochs}], Loss: {train_loss:.4f}, "
+              f"Dice Score: {train_dice:.4f}")
 
         # 验证
-        # 在訓練循環中修改為
-        validate(model, valid_loader, criterion, device)
+        val_loss, val_dice = validate(model, valid_loader, criterion, device)
+        
+        # 保存最佳模型
+        if val_dice > best_dice:
+            best_dice = val_dice
+            save_path = os.path.join(args.save_path, f"best_model_epoch_{epoch+1}.pth")
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_dice': train_dice,
+                'val_dice': val_dice,
+            }, save_path)
+            print(f"Best model saved to {save_path}")
+        
+        # 每个epoch结束后保存检查点
+        checkpoint_path = os.path.join(args.save_path, f"checkpoint_epoch_{epoch+1}.pth")
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'train_dice': train_dice,
+            'val_dice': val_dice,
+        }, checkpoint_path)
+        print(f"Checkpoint saved to {checkpoint_path}")
 
 def validate(model, valid_loader, criterion, device):
-    """
-    验证模型，并计算 Dice Score
-    """
-    model.eval()  # 设为评估模式
+    model.eval()
     running_loss = 0.0
     epoch_dice_score = 0.0
 
-    with torch.no_grad():  # 禁用梯度计算
-        for batch in (valid_loader):
+    with torch.no_grad():
+        for batch in tqdm(valid_loader):
             images, masks = batch['image'], batch['mask']
+            images, masks = images.to(device), masks.to(device)
 
-            images, masks = images.to(device), masks.to(device)  # 如果使用GPU, 否则删除此行
-
-            outputs = model(images)  # 模型前向传播
-            loss = criterion(outputs, masks)  # 计算损失
+            outputs = model(images)
+            loss = criterion(outputs, masks)
 
             running_loss += loss.item()
 
@@ -219,7 +228,12 @@ def validate(model, valid_loader, criterion, device):
             dice = dice_score(outputs, masks)
             epoch_dice_score += dice.item()
 
-    print(f"Validation Loss: {running_loss / len(valid_loader):.4f}, Dice Score: {epoch_dice_score / len(valid_loader):.4f}")
+    val_loss = running_loss / len(valid_loader)
+    val_dice = epoch_dice_score / len(valid_loader)
+    print(f"Validation Loss: {val_loss:.4f}, "
+          f"Dice Score: {val_dice:.4f}")
+    
+    return val_loss, val_dice
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
@@ -227,8 +241,12 @@ def get_args():
     parser.add_argument('--epochs', '-e', type=int, default=5, help='number of epochs')
     parser.add_argument('--batch_size', '-b', type=int, default=1, help='batch size')
     parser.add_argument('--learning-rate', '-lr', type=float, default=1e-5, help='learning rate')
+    parser.add_argument('--save_path', type=str, default='D:\\PUPU\\2025 NYCU DL\\Lab2\\Lab2_Binary_Semantic_Segmentation_2025\\Lab2_Binary_Semantic_Segmentation_2025\\saved_models', 
+                        help='path to save the model')
 
     return parser.parse_args()
+        
+
 
 if __name__ == "__main__":
     args = get_args()
