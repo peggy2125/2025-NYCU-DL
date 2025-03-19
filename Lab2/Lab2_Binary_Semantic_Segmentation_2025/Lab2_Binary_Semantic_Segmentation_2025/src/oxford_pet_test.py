@@ -7,8 +7,10 @@ from PIL import Image
 from tqdm import tqdm
 from urllib.request import urlretrieve
 import glob
+import random
 import albumentations as A
 import matplotlib.pyplot as plt
+import xml.etree.ElementTree as ET
 
 class OxfordPetDataset(torch.utils.data.Dataset):
     def __init__(self, root, mode="train", transform=None):
@@ -106,40 +108,17 @@ def download_url(url, filepath):
         urlretrieve(url, filename=filepath, reporthook=t.update_to, data=None)
         t.total = t.n
 
-
 def extract_archive(filepath):
     extract_dir = os.path.dirname(os.path.abspath(filepath))
     dst_dir = os.path.splitext(filepath)[0]
     if not os.path.exists(dst_dir):
         shutil.unpack_archive(filepath, extract_dir)
-        
-'''class SimpleOxfordPetDataset(OxfordPetDataset):
-    def __getitem__(self, *args, **kwargs):
-
-        sample = super().__getitem__(*args, **kwargs)
-        
-        # Apply mask conversion at this point, after cleaning and resizing
-        mask = self._preprocess_mask(trimap)
-        
-        # resize images
-        image = np.array(Image.fromarray(sample["image"]).resize((256, 256), Image.BILINEAR))
-        mask = np.array(Image.fromarray(sample["mask"]).resize((256, 256), Image.NEAREST))
-        trimap = np.array(Image.fromarray(sample["trimap"]).resize((256, 256), Image.NEAREST))
-
-        # convert to other format HWC -> CHW
-        sample["image"] = np.moveaxis(image, -1, 0)
-        sample["mask"] = np.expand_dims(mask, 0)
-        sample["trimap"] = np.expand_dims(trimap, 0)
-
-        return sample'''
-
 
 class TqdmUpTo(tqdm):
     def update_to(self, b=1, bsize=1, tsize=None):
         if tsize is not None:
             self.total = tsize
         self.update(b * bsize - self.n)
-
 
 def claenup_dataset_without_foreground(dataset_root, train_filenames, valid_filenames, test_filenames):
     """分析整體資料集，找出無前景標記的圖片"""
@@ -201,11 +180,119 @@ def analyze_dataset(dataset_root, train_filenames):
         foreground_pixels = np.sum((trimap == 1) | (trimap == 3))  # 前景及未分類區域
         foreground_ratio = foreground_pixels / total_pixels
         
-        if foreground_ratio < 0.05:  # 前景占比小於5%
+        if foreground_ratio < 0.3:  # 前景占比小於30%
             small_foreground_images.append((filename + ".png", foreground_ratio))
     
     print(f"分析結果：\n- 未分類區域過多(training data)：{len(large_Notclassified_images)}張\n- 前景過小(training data)：{len(small_foreground_images)}張")
     return large_Notclassified_images, small_foreground_images
+
+def get_bounding_box_from_xml(xml_file, img_shape, expand_ratio):
+    """ 從 XML 讀取 bounding box，並隨機擴展一定比例 """
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+    
+    obj = root.find('object')
+    if obj is not None:
+        bbox = obj.find('bndbox')
+        xmin = int(bbox.find('xmin').text)
+        ymin = int(bbox.find('ymin').text)
+        xmax = int(bbox.find('xmax').text)
+        ymax = int(bbox.find('ymax').text)
+
+        # 計算 bounding box 的寬度與高度
+        width = xmax - xmin
+        height = ymax - ymin
+
+        # 計算擴展的範圍
+        expand_w = int(width * expand_ratio)
+        expand_h = int(height * expand_ratio)
+
+        img_h, img_w = img_shape[:2]  # 取得圖片大小
+
+        # **擴展 bounding box，確保不超出圖片範圍**
+        xmin = max(0, xmin - expand_w)
+        ymin = max(0, ymin - expand_h)
+        xmax = min(img_w, xmax + expand_w)
+        ymax = min(img_h, ymax + expand_h)
+
+        return xmin, ymin, xmax, ymax
+    else:
+        return None
+
+def crop_image(dataset_root, image_name, filtered_images_dir, filtered_masks_dir, p):
+    """
+    隨機裁切單張影像，並返回裁切後的影像與原始影像。
+    - image_path: 影像檔案的路徑
+    - xml_dir: 包含對應 XML 檔案的資料夾
+    - crop_prob: 進行裁切的機率 (0.0 - 1.0)
+    - min_expand, max_expand: 控制 bounding box 擴大範圍
+    """
+    min_expand=0.1
+    max_expand=0.5
+    image_path = os.path.join(dataset_root, "images", image_name.replace('.png', '.jpg'))
+    trimap_path = os.path.join(dataset_root, "annotations", "trimaps", image_name)
+    xml_dir = os.path.join(dataset_root, "annotations", "xmls", image_name.replace('.png', '.xml'))
+    
+    # 讀取影像和標註圖
+    image = cv2.imread(image_path)
+    mask = cv2.imread(trimap_path)
+    img_h, img_w = image.shape[:2]
+
+    # 是否執行裁切？
+    if os.path.exists(xml_dir) and random.random() < p:
+        expand_ratio = random.uniform(min_expand, max_expand)
+        bbox = get_bounding_box_from_xml(xml_dir, image.shape, expand_ratio)
+
+        if bbox:
+            xmin, ymin, xmax, ymax = bbox
+
+            # 確保裁剪範圍在原圖內
+            if xmin < 0 or ymin < 0 or xmax > img_w or ymax > img_h:
+                return image, mask  # 超出範圍則不裁切，直接返回原圖
+            
+            # 使用 Albumentations 同步裁切影像和標註圖
+            transform = A.Compose([A.Crop(x_min=xmin, y_min=ymin, x_max=xmax, y_max=ymax)])
+            transformed = transform(image=image, mask=mask)
+            cropped_image = transformed['image']
+            cropped_mask = transformed['mask']
+        else:
+            # 如果沒有 bounding box，則使用原圖
+            cropped_image = image
+            cropped_mask = mask
+    else:
+        # 不裁切，直接使用原圖
+        cropped_image = image
+        cropped_mask = mask
+    # 保存裁切後的影像與標註圖
+    cv2.imwrite(os.path.join(filtered_images_dir, image_name.replace('.png', '') + "_crop.jpg"), cropped_image)
+    cv2.imwrite(os.path.join(filtered_masks_dir, image_name.replace('.png', '') + "_crop.png"), cropped_mask)
+
+    return cropped_image, cropped_mask
+
+def custom_crop(dataset_root, image_name, p=1):
+    """
+    自定义裁切函数，用于裁切影像和標註圖。
+    
+    - image: 原始影像
+    - mask: 原始標註圖
+    - dataset_root: 資料集根目錄
+    - image_name: 影像檔案名稱（不含副檔名）
+    - p: 進行裁切的機率 (0.0 - 1.0)
+
+    返回裁切後的影像和標註圖。
+    """
+    filtered_images_dir = os.path.join(dataset_root, "images")
+    filtered_masks_dir = os.path.join(dataset_root, "annotations", "trimaps")
+
+    # 调用 crop_image 函数进行裁剪
+    cropped_image, cropped_mask = crop_image(dataset_root, image_name, filtered_images_dir, filtered_masks_dir, p)
+    
+    return cropped_image, cropped_mask
+
+def custom_crop_wrapper(image, mask, dataset_root, image_name, p=1):
+    """ 用于 Albumentations 的裁切包装函数 """
+    cropped_image, cropped_mask = custom_crop(dataset_root, image_name, p)
+    return cropped_image, cropped_mask
 
 # 修改後的過濾資料集函數 - 只過濾訓練資料
 def create_filtered_dataset(dataset_root):
@@ -233,6 +320,16 @@ def create_filtered_dataset(dataset_root):
     os.makedirs(filtered_images_dir, exist_ok=True)
     os.makedirs(filtered_masks_dir, exist_ok=True)
     
+    # 記錄過濾後的訓練資料集檔案名
+    filtered_train_filenames = []    
+    filtered_valid_filenames = []
+    filtered_test_filenames = []
+    
+    for image_tuple in tqdm(small_foreground_images, desc="Cropping Images"):
+        image_name = image_tuple[0]
+        cropped_image, cropped_mask = crop_image(dataset_root, image_name, filtered_images_dir, filtered_masks_dir, p=1)
+        filtered_train_filenames.append(image_name.replace(".png", "") + "_crop")
+
     # 創建排除列表 
     exclude_files = set([f.replace(".png", "") for f in no_foreground_images])
     exclude_files.update([f[0].replace(".png", "") for f in large_Notclassified_images])
@@ -244,11 +341,6 @@ def create_filtered_dataset(dataset_root):
         'valid': valid_filenames,
         'test': test_filenames
     }
-    
-    # 記錄過濾後的訓練資料集檔案名
-    filtered_train_filenames = []    
-    filtered_valid_filenames = []
-    filtered_test_filenames = []
     # 複製所有資料
     for mode, filenames in all_filenames.items():
         skipfile_count = 0
@@ -270,32 +362,33 @@ def create_filtered_dataset(dataset_root):
             dst_mask_path = os.path.join(filtered_masks_dir, filename + ".png")
             if os.path.exists(src_mask_path):
                 shutil.copy(src_mask_path, dst_mask_path)
-
+        
             # 記錄過濾後的訓練資料檔案名
             if mode == 'train' and filename not in exclude_files:
                 filtered_train_filenames.append(filename)
             elif mode == 'valid' and filename not in exclude_files:
                 filtered_valid_filenames.append(filename)
             elif mode == 'test' and filename not in exclude_files:
-                filtered_test_filenames.append(filename)                
-        print(f"已過濾的{mode}資料：{len(filenames) - skipfile_count}張")
+                filtered_test_filenames.append(filename)        
     
         # 創建並寫入過濾後的訓練、驗證和測試資料集檔案名（先清空內容）
     with open(os.path.join(filtered_dir, "train.txt"), "w") as f:
         for filename in filtered_train_filenames:
             f.write(f"{filename}.jpg\n")
-    
+        print(f"已過濾的train資料：{len(filtered_train_filenames)}張")
+        
     with open(os.path.join(filtered_dir, "valid.txt"), "w") as f:
         for filename in filtered_valid_filenames:
             f.write(f"{filename}.jpg\n")
-    
+        print(f"已過濾的valid資料：{len(filtered_valid_filenames)}張")
+
     with open(os.path.join(filtered_dir, "test.txt"), "w") as f:
         for filename in filtered_test_filenames:
             f.write(f"{filename}.jpg\n")
-                
+        print(f"已過濾的test資料：{len(filtered_test_filenames)}張")        
     return filtered_dir , filtered_train_filenames, filtered_valid_filenames, filtered_test_filenames
 
-def create_augmentation_pipeline():
+def create_augmentation_pipeline(image_name, dataset_root):
     """創建數據增強管線"""
     # 數據增強組合
     transform = A.Compose([
@@ -315,7 +408,7 @@ def create_augmentation_pipeline():
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
             A.HueSaturationValue(hue_shift_limit=20, sat_shift_limit=30, val_shift_limit=20, p=0.5),
             A.CLAHE(clip_limit=4.0, p=0.5),
-        ], p=0.5),
+        ], p=0.4),
         
         # 模糊和銳化
         A.OneOf([
@@ -324,90 +417,21 @@ def create_augmentation_pipeline():
         ], p=0.3),
         
         # # 填充、縮放、調整大小等
-         A.OneOf([
-             A.PadIfNeeded(min_height=256, min_width=256, border_mode=cv2.BORDER_CONSTANT, fill=0, p=0.5),
-             A.RandomSizedCrop(min_max_height=(180, 256), size=(256,256), interpolation=cv2.INTER_NEAREST, p=0.5),
-         ], p=0.5),
+        A.OneOf([
+            A.PadIfNeeded(min_height=256, min_width=256, border_mode=cv2.BORDER_CONSTANT, fill=0, p=0.5),
+            # 使用自定义裁剪函数
+            A.Lambda(image=lambda img, **kwargs: custom_crop_wrapper(img, None, dataset_root, image_name, p=1)[0],
+                    mask=lambda msk, **kwargs: custom_crop_wrapper(None, msk, dataset_root, image_name, p=1)[1], p=0.5),
+        ], p=0.5),
         
         # 噪聲
         A.OneOf([
-            A.GaussNoise(var_limit=(10.0, 50.0), p=0.5),
-            A.ISONoise(color_shift=(0.01, 0.05), intensity=(0.1, 0.5), p=0.5),
+            A.GaussNoise(var_limit=(5.0, 15.0), p=0.5),
+            A.ISONoise(color_shift=(0.005, 0.02), intensity=(0.05, 0.2), p=0.5),
         ], p=0.2),
     ])
     
     return transform
-
-def visualize_samples(aug_dir, num_samples=5):
-    """可視化資料集樣本，區分訓練、驗證和測試資料"""
-    
-    # 讀取資料集檔案名
-    with open(os.path.join(aug_dir, "train_filenames.txt"), "r") as f:
-        train_filenames = [line.strip() for line in f.readlines()]
-    
-    # 區分增強資料和原始資料
-    augmented_filenames = [f for f in train_filenames if "_aug" in f]
-    original_train_filenames = [f for f in train_filenames if "_aug" not in f]
-    
-    # 驗證和測試資料的檔案名
-    with open(os.path.join(aug_dir, "valid_filenames.txt"), "r") as f:
-        valid_filenames = [line.strip() for line in f.readlines()]
-    
-    with open(os.path.join(aug_dir, "test_filenames.txt"), "r") as f:
-        test_filenames = [line.strip() for line in f.readlines()]
-
-    # 定義資料類型及對應的檔案名
-    data_types = [
-        ("原始訓練資料", original_train_filenames),
-        ("增強訓練資料", augmented_filenames),
-        ("驗證資料", valid_filenames),
-        ("測試資料", test_filenames)
-    ]
-    
-    # 創建一個大型圖形
-    fig, axes = plt.subplots(len(data_types), num_samples, figsize=(15, 3*len(data_types)))
-    
-    for i, (data_type, filenames) in enumerate(data_types):
-        if len(filenames) == 0:
-            continue
-        
-        # 隨機選擇樣本
-        selected_files = np.random.choice(filenames, min(num_samples, len(filenames)), replace=False)
-        
-        for j, filename in enumerate(selected_files):
-            # 載入圖像和遮罩
-            image_path = os.path.join(aug_dir, "images", filename + ".jpg")
-            mask_path = os.path.join(aug_dir, "annotations", "trimaps", filename + ".png")
-            
-            if not os.path.exists(image_path) or not os.path.exists(mask_path):
-                continue
-            
-            image = cv2.imread(image_path)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            mask = np.array(Image.open(mask_path))
-            
-            # 可視化遮罩 (1: 前景, 2: 背景, 3: 未分類)
-            # 創建一個帶有透明度的覆蓋遮罩
-            overlay = np.zeros((*image.shape[:2], 4), dtype=np.uint8)
-            overlay[mask == 1] = [0, 255, 0, 128]    # 前景為綠色
-            overlay[mask == 2] = [0, 0, 255, 128]    # 背景為藍色
-            overlay[mask == 3] = [255, 0, 0, 128]    # 未分類為紅色
-            
-            # 將遮罩疊加到圖像上
-            overlay_image = image.copy()
-            overlay_rgb = overlay[..., :3]
-            overlay_alpha = overlay[..., 3:4] / 255.0
-            overlay_image = overlay_image * (1 - overlay_alpha) + overlay_rgb * overlay_alpha
-            
-            # 顯示圖像
-            axes[i, j].imshow(overlay_image.astype(np.uint8))
-            axes[i, j].set_title(f"{data_type}\n{os.path.basename(filename)}")
-            axes[i, j].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(aug_dir, "sample_visualizations.png"))
-    plt.close()
-    print(f"樣本可視化已保存至 {os.path.join(aug_dir, 'sample_visualizations.png')}")
     
 class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
     def __init__(self, argdata_path, mode, augmentations=None, num_augmentations=1):
@@ -455,7 +479,6 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
             train_filenames = [line.strip().replace('.jpg', '') for line in f.readlines()]
 
         # 創建增強管線
-        transform = create_augmentation_pipeline()
     
         # 增強的圖片和遮罩目錄
         aug_images_dir = os.path.join(self.data_path, "images")
@@ -471,6 +494,8 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
             image_path = os.path.join(self.data_path, "images", filename + ".jpg")
             trimap_path = os.path.join(self.data_path, "annotations", "trimaps", filename + ".png")
             
+            transform = create_augmentation_pipeline(self.data_path, os.path.join(filename + ".png"))
+            
             # 檢查檔案是否存在
             if not os.path.exists(image_path) or not os.path.exists(trimap_path):
                 continue
@@ -483,7 +508,8 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
             # 生成多個增強版本
             for i in range(self.num_augmentations):
                 try:
-                    augmented = transform(image=image, mask = trimap)
+
+                    augmented = transform(image=image, mask=trimap)
                     aug_image = augmented['image']
                     aug_mask = augmented['mask']
                     
@@ -526,8 +552,8 @@ class PreprocessOxfordPetDataset(torch.utils.data.Dataset):
 
         # 計算增強後的資料集大小
         final_train_count = len([f for f in os.listdir(aug_images_dir) if any(f.startswith(fn) for fn in train_filenames)])
-        final_valid_count = len([f for f in os.listdir(os.path.join(filtered_dir, "valid_filenames.txt"))])
-        final_test_count = len([f for f in os.listdir(os.path.join(filtered_dir, "test_filenames.txt"))])
+        final_valid_count = len([f for f in os.listdir(os.path.join(self.data_path, "valid_filenames.txt"))])
+        final_test_count = len([f for f in os.listdir(os.path.join(self.data_path, "test_filenames.txt"))])
         
         print(f"增強後的訓練資料：{final_train_count}張 (原始: {len(train_filenames)}張 + 增強: {aug_count}張)")
         print(f"驗證資料：{final_valid_count}張 (未增強)")
@@ -637,8 +663,6 @@ if __name__ == "__main__":
         train_dataset = load_dataset(dataset_root, mode="train")
         valid_dataset = load_dataset(dataset_root, mode="valid")
         test_dataset = load_dataset(dataset_root, mode="test")
-        
-        visualize_samples(r"D:\PUPU\2025 NYCU DL\Lab2\Lab2_Binary_Semantic_Segmentation_2025\Lab2_Binary_Semantic_Segmentation_2025\filtered_oxford_pet", num_samples=5)
         
         print(f"訓練資料集大小: {len(train_dataset)}")
         print(f"驗證資料集大小: {len(valid_dataset)}")
